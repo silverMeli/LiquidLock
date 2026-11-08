@@ -258,7 +258,9 @@ private fun MorphingArtwork(
         val height = lerp(card, h, t)
         val x = lerp((w - card) / 2, 0.dp, t)
         val y = lerp(cardTop, 0.dp, t)
-        val corner = lerp(26.dp, 0.dp, t)
+        // El "spring" puede pasarse un poco de 1 (rebote): el radio nunca debe ser negativo
+        val tc = t.coerceIn(0f, 1f)
+        val corner = lerp(26.dp, 0.dp, tc)
         val artShape = RoundedCornerShape(corner)
 
         Box(
@@ -269,7 +271,7 @@ private fun MorphingArtwork(
                 .graphicsLayer {
                     scaleX = pauseScale
                     scaleY = pauseScale
-                    shadowElevation = (1f - t) * 36.dp.toPx()
+                    shadowElevation = (1f - tc) * 36.dp.toPx()
                     shape = artShape
                     clip = true
                 }
@@ -287,7 +289,7 @@ private fun MorphingArtwork(
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
-                                val z = 1f + (zoom - 1f) * t * zoomAmount
+                                val z = 1f + (zoom - 1f) * tc * zoomAmount
                                 scaleX = z
                                 scaleY = z
                             },
@@ -297,16 +299,16 @@ private fun MorphingArtwork(
                 }
             }
             // Degradados arriba y abajo para que se lean reloj y controles
-            if (t > 0.01f) {
+            if (tc > 0.01f) {
                 Box(
                     Modifier
                         .fillMaxSize()
                         .background(
                             Brush.verticalGradient(
-                                0f to Color.Black.copy(alpha = 0.45f * t),
+                                0f to Color.Black.copy(alpha = 0.45f * tc),
                                 0.28f to Color.Transparent,
                                 0.5f to Color.Transparent,
-                                1f to Color.Black.copy(alpha = 0.8f * t),
+                                1f to Color.Black.copy(alpha = 0.8f * tc),
                             )
                         )
                 )
