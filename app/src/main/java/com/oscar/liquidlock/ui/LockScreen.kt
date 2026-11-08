@@ -1,9 +1,9 @@
 package com.oscar.liquidlock.ui
 
 import android.graphics.Bitmap
+import android.media.AudioManager
 import android.os.Build
 import android.os.SystemClock
-import android.text.format.DateFormat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
@@ -30,7 +30,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -55,6 +54,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeDown
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.FastForward
 import androidx.compose.material.icons.rounded.FastRewind
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
@@ -66,65 +67,89 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
+import androidx.compose.ui.unit.max
 import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.oscar.liquidlock.ClockStyle
+import com.oscar.liquidlock.LockNotif
 import com.oscar.liquidlock.MediaRepository
+import com.oscar.liquidlock.NotifRepository
 import com.oscar.liquidlock.NowPlaying
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import kotlin.math.roundToInt
 
 /* ------------------------------------------------------------------ */
 /*  Pantalla principal                                                 */
 /* ------------------------------------------------------------------ */
 
 @Composable
-fun LockScreen(onUnlock: () -> Unit) {
+fun LockScreen(
+    clock: ClockStyle,
+    showNotifs: Boolean,
+    showNotifContent: Boolean,
+    onUnlock: () -> Unit,
+    onOpenNotification: (LockNotif) -> Unit,
+) {
     val music by MediaRepository.state.collectAsStateWithLifecycle()
+    val allNotifs by NotifRepository.state.collectAsStateWithLifecycle()
+    val notifs = if (showNotifs) allNotifs else emptyList()
     val current = music
 
-    // Guardamos la última canción para que las animaciones de salida no se corten
     var lastMusic by remember { mutableStateOf<NowPlaying?>(null) }
     LaunchedEffect(current) { if (current != null) lastMusic = current }
     val display = current ?: lastMusic
 
     val hasMusic = current != null
     val playing = current?.isPlaying == true
-    var fullBleed by rememberSaveable { mutableStateOf(true) } // carátula a pantalla completa
+    var fullBleed by rememberSaveable { mutableStateOf(true) }
+    var sheetOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(notifs.isEmpty()) { if (notifs.isEmpty()) sheetOpen = false }
     val colors = rememberArtColors(current?.art)
 
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
     val drag = remember { Animatable(0f) }
+
+    // Medidas para colocar la carátula en el hueco libre
+    var rootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    var clockBottom by remember { mutableFloatStateOf(0f) }
+    var bottomTop by remember { mutableFloatStateOf(0f) }
 
     BoxWithConstraints(
         Modifier
@@ -164,12 +189,13 @@ fun LockScreen(onUnlock: () -> Unit) {
                         onDragCancel = { scope.launch { drag.animateTo(0f, spring()) } },
                     )
                 }
+                .onGloballyPositioned { rootCoords = it }
         ) {
             // 1) Fondo líquido con los colores de la carátula
             LiquidBackground(colors = colors, playing = playing, modifier = Modifier.fillMaxSize())
             display?.art?.let { BlurredArt(it, Modifier.fillMaxSize()) }
 
-            // 2) Carátula que se transforma entre tarjeta y pantalla completa
+            // 2) Carátula (tarjeta ↔ ampliada)
             AnimatedVisibility(
                 visible = hasMusic,
                 enter = fadeIn(tween(500)) + scaleIn(initialScale = 0.9f),
@@ -180,34 +206,76 @@ fun LockScreen(onUnlock: () -> Unit) {
                         np = it,
                         fullBleed = fullBleed,
                         playing = playing,
+                        areaTop = with(density) { clockBottom.toDp() },
+                        areaBottom = with(density) { bottomTop.toDp() },
                         onToggle = { fullBleed = !fullBleed },
                     )
                 }
             }
 
-            // 3) Reloj, reproductor y "desliza para desbloquear"
+            // 3) Reloj arriba; notificaciones, reproductor y "desliza" abajo
             Column(
                 Modifier
                     .fillMaxSize()
                     .systemBarsPadding()
             ) {
-                Clock(
-                    Modifier
+                ClockView(
+                    style = clock,
+                    accent = accentFrom(colors),
+                    modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 28.dp)
+                        .padding(top = 24.dp)
+                        .onGloballyPositioned { c ->
+                            rootCoords?.let { r -> clockBottom = r.localBoundingBoxOf(c).bottom }
+                        },
                 )
                 Spacer(Modifier.weight(1f))
-                AnimatedVisibility(
-                    visible = hasMusic,
-                    enter = fadeIn(tween(500)) + slideInVertically(spring(dampingRatio = 0.8f)) { it / 2 },
-                    exit = fadeOut(tween(300)) + slideOutVertically { it / 2 },
+                Column(
+                    Modifier.onGloballyPositioned { c ->
+                        rootCoords?.let { r -> bottomTop = r.localBoundingBoxOf(c).top }
+                    }
                 ) {
-                    display?.let { PlayerPanel(it) }
+                    AnimatedVisibility(
+                        visible = notifs.isNotEmpty(),
+                        enter = fadeIn() + slideInVertically { it / 2 },
+                        exit = fadeOut(),
+                    ) {
+                        NotificationStack(
+                            notifs = notifs,
+                            showContent = showNotifContent,
+                            onExpand = { sheetOpen = true },
+                            onOpen = onOpenNotification,
+                            onDismiss = { NotifRepository.dismiss(it) },
+                            modifier = Modifier.padding(bottom = 22.dp),
+                        )
+                    }
+                    AnimatedVisibility(
+                        visible = hasMusic,
+                        enter = fadeIn(tween(500)) + slideInVertically(spring(dampingRatio = 0.8f)) { it / 2 },
+                        exit = fadeOut(tween(300)) + slideOutVertically { it / 2 },
+                    ) {
+                        display?.let { PlayerPanel(it) }
+                    }
+                    UnlockHint(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp, bottom = 8.dp)
+                    )
                 }
-                UnlockHint(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(top = 14.dp, bottom = 10.dp)
+            }
+
+            // 4) Lista completa de notificaciones
+            AnimatedVisibility(visible = sheetOpen, enter = fadeIn(), exit = fadeOut()) {
+                NotificationSheet(
+                    notifs = notifs,
+                    showContent = showNotifContent,
+                    onClose = { sheetOpen = false },
+                    onOpen = onOpenNotification,
+                    onDismiss = { NotifRepository.dismiss(it) },
+                    onClearAll = {
+                        NotifRepository.dismissAll()
+                        sheetOpen = false
+                    },
                 )
             }
         }
@@ -219,15 +287,17 @@ fun LockScreen(onUnlock: () -> Unit) {
 /* ------------------------------------------------------------------ */
 
 /**
- * La carátula pasa con un "spring" de tarjeta redondeada (estilo Apple Music)
- * a ocupar toda la pantalla (estilo pantalla de bloqueo de iOS 26).
- * En pausa la tarjeta se encoge; en pantalla completa hace un zoom lento.
+ * Tarjeta: carátula redondeada en el hueco entre reloj y controles; se encoge en pausa.
+ * Ampliada (estilo iOS 26): ocupa todo el ancho arriba, sin recortarse, y se funde
+ * suavemente con el fondo de colores. Así no se ve pixelada ni deformada.
  */
 @Composable
 private fun MorphingArtwork(
     np: NowPlaying,
     fullBleed: Boolean,
     playing: Boolean,
+    areaTop: Dp,
+    areaBottom: Dp,
     onToggle: () -> Unit,
 ) {
     val t by animateFloatAsState(
@@ -236,14 +306,14 @@ private fun MorphingArtwork(
         label = "morph",
     )
     val pauseScale by animateFloatAsState(
-        if (playing || fullBleed) 1f else 0.84f,
+        if (playing || fullBleed) 1f else 0.86f,
         spring(dampingRatio = 0.55f, stiffness = 280f),
         label = "pause",
     )
-    val inf = rememberInfiniteTransition(label = "kenburns")
+    val inf = rememberInfiniteTransition(label = "breathe")
     val zoom by inf.animateFloat(
-        1f, 1.09f,
-        infiniteRepeatable(tween(14000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        1f, 1.04f,
+        infiniteRepeatable(tween(9000, easing = FastOutSlowInEasing), RepeatMode.Reverse),
         label = "zoom",
     )
     val zoomAmount by animateFloatAsState(if (playing) 1f else 0f, tween(1200), label = "zoomAmt")
@@ -251,17 +321,21 @@ private fun MorphingArtwork(
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val w = maxWidth
         val h = maxHeight
-        val card = min(w - 72.dp, h * 0.36f)
-        val cardTop = h * 0.27f
+        // Hueco libre (si aún no se midió, valores por defecto)
+        val top = if (areaTop > 0.dp) areaTop else h * 0.25f
+        val bottom = if (areaBottom > top + 100.dp) areaBottom else h * 0.62f
+        val card = max(120.dp, min(w - 64.dp, bottom - top - 28.dp))
+        val cardTop = top + (bottom - top - card) / 2
 
-        val width = lerp(card, w, t)
-        val height = lerp(card, h, t)
+        val bigW = w
+        val bigH = min(w * 1.1f, h * 0.62f)
+
+        val tc = t.coerceIn(0f, 1f) // el rebote del spring no debe dar valores negativos
+        val width = lerp(card, bigW, t)
+        val height = lerp(card, bigH, t)
         val x = lerp((w - card) / 2, 0.dp, t)
         val y = lerp(cardTop, 0.dp, t)
-        // El "spring" puede pasarse un poco de 1 (rebote): el radio nunca debe ser negativo
-        val tc = t.coerceIn(0f, 1f)
-        val corner = lerp(26.dp, 0.dp, tc)
-        val artShape = RoundedCornerShape(corner)
+        val artShape = RoundedCornerShape(lerp(26.dp, 0.dp, tc))
 
         Box(
             Modifier
@@ -280,38 +354,57 @@ private fun MorphingArtwork(
                 }
         ) {
             Crossfade(targetState = np.art, animationSpec = tween(700), label = "art") { art ->
-                if (art != null) {
-                    val img = remember(art) { art.asImageBitmap() }
-                    Image(
-                        bitmap = img,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                val z = 1f + (zoom - 1f) * tc * zoomAmount
-                                scaleX = z
-                                scaleY = z
-                            },
-                    )
-                } else {
-                    ArtPlaceholder()
-                }
-            }
-            // Degradados arriba y abajo para que se lean reloj y controles
-            if (tc > 0.01f) {
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                0f to Color.Black.copy(alpha = 0.45f * tc),
-                                0.28f to Color.Transparent,
-                                0.5f to Color.Transparent,
-                                1f to Color.Black.copy(alpha = 0.8f * tc),
-                            )
+                        // Desvanecido inferior para fundirse con el fondo (solo ampliada)
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            if (tc > 0.01f) {
+                                drawRect(
+                                    Brush.verticalGradient(
+                                        0f to Color.Black,
+                                        0.55f to Color.Black,
+                                        1f to Color.Black.copy(alpha = 1f - tc),
+                                    ),
+                                    blendMode = BlendMode.DstIn,
+                                )
+                            }
+                        }
+                ) {
+                    if (art != null) {
+                        val img = remember(art) { art.asImageBitmap() }
+                        Image(
+                            bitmap = img,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            filterQuality = FilterQuality.High,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    val z = 1f + (zoom - 1f) * zoomAmount
+                                    scaleX = z
+                                    scaleY = z
+                                },
                         )
-                )
+                    } else {
+                        ArtPlaceholder()
+                    }
+                    // Oscurecer un poco arriba para que el reloj se lea
+                    if (tc > 0.01f) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        0f to Color.Black.copy(alpha = 0.4f * tc),
+                                        0.35f to Color.Transparent,
+                                    )
+                                )
+                        )
+                    }
+                }
             }
         }
     }
@@ -364,56 +457,8 @@ private fun BlurredArt(art: Bitmap, modifier: Modifier) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Reloj                                                              */
-/* ------------------------------------------------------------------ */
-
-@Composable
-private fun Clock(modifier: Modifier) {
-    val ctx = LocalContext.current
-    var now by remember { mutableStateOf(Date()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            now = Date()
-            delay(1000 - System.currentTimeMillis() % 1000)
-        }
-    }
-    val locale = Locale.getDefault()
-    val is24 = DateFormat.is24HourFormat(ctx)
-    val time = SimpleDateFormat(if (is24) "H:mm" else "h:mm", locale).format(now)
-    val datePattern = if (locale.language == "es") "EEEE, d 'de' MMMM" else "EEEE, MMMM d"
-    val date = SimpleDateFormat(datePattern, locale).format(now).replaceFirstChar { it.titlecase(locale) }
-
-    val shadow = Shadow(Color.Black.copy(alpha = 0.3f), Offset(0f, 4f), 20f)
-    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            date,
-            style = TextStyle(
-                color = Color.White.copy(alpha = 0.9f),
-                fontSize = 19.sp,
-                fontWeight = FontWeight.SemiBold,
-                shadow = shadow,
-            ),
-        )
-        // Efecto "vidrio": blanco que se desvanece hacia abajo
-        Text(
-            time,
-            style = TextStyle(
-                brush = Brush.verticalGradient(listOf(Color.White, Color.White.copy(alpha = 0.72f))),
-                fontSize = 92.sp,
-                lineHeight = 96.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = (-2).sp,
-                shadow = shadow,
-            ),
-        )
-    }
-}
-
-/* ------------------------------------------------------------------ */
 /*  Reproductor                                                        */
 /* ------------------------------------------------------------------ */
-
-private val GlassShape = RoundedCornerShape(32.dp)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -422,14 +467,8 @@ private fun PlayerPanel(np: NowPlaying) {
         Modifier
             .padding(horizontal = 14.dp)
             .fillMaxWidth()
-            .clip(GlassShape)
-            .background(Color.White.copy(alpha = 0.13f))
-            .border(
-                1.dp,
-                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.4f), Color.White.copy(alpha = 0.05f))),
-                GlassShape,
-            )
-            .padding(horizontal = 22.dp, vertical = 18.dp)
+            .glass()
+            .padding(horizontal = 22.dp, vertical = 16.dp)
     ) {
         AnimatedContent(
             targetState = np.title to np.artist,
@@ -458,10 +497,65 @@ private fun PlayerPanel(np: NowPlaying) {
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
         ProgressBar(np)
-        Spacer(Modifier.height(6.dp))
         Controls(np.isPlaying)
+        VolumeSlider()
+    }
+}
+
+/** Barra fina que se engrosa al arrastrarla (como en iOS). */
+@Composable
+private fun GlassBar(
+    fraction: Float,
+    onSeek: (Float, Boolean) -> Unit, // (fracción, terminó)
+    modifier: Modifier = Modifier,
+) {
+    val seek by rememberUpdatedState(onSeek)
+    var dragFrac by remember { mutableStateOf<Float?>(null) }
+    val shown = (dragFrac ?: fraction).coerceIn(0f, 1f)
+    val barH by animateDpAsState(if (dragFrac != null) 12.dp else 7.dp, spring(), label = "barH")
+
+    Box(
+        modifier
+            .height(26.dp)
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { o ->
+                        dragFrac = (o.x / size.width).coerceIn(0f, 1f)
+                        seek(dragFrac!!, false)
+                    },
+                    onHorizontalDrag = { change, dx ->
+                        change.consume()
+                        dragFrac = ((dragFrac ?: 0f) + dx / size.width).coerceIn(0f, 1f)
+                        seek(dragFrac!!, false)
+                    },
+                    onDragEnd = {
+                        dragFrac?.let { seek(it, true) }
+                        dragFrac = null
+                    },
+                    onDragCancel = { dragFrac = null },
+                )
+            }
+            .pointerInput(Unit) {
+                detectTapGestures { o -> seek((o.x / size.width).coerceIn(0f, 1f), true) }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(barH)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.25f))
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(shown)
+                    .fillMaxHeight()
+                    .background(Color.White.copy(alpha = 0.92f))
+            )
+        }
     }
 }
 
@@ -476,54 +570,24 @@ private fun ProgressBar(np: NowPlaying) {
         }
     }
     val dur = np.durationMs
-    var dragFrac by remember { mutableStateOf<Float?>(null) }
-
+    var preview by remember { mutableStateOf<Float?>(null) }
     val livePos = np.currentPosition(now)
-    val frac = dragFrac ?: if (dur > 0) livePos.toFloat() / dur else 0f
-    val shownPos = if (dragFrac != null) (frac * dur).toLong() else livePos
-    val barH by animateDpAsState(if (dragFrac != null) 12.dp else 7.dp, spring(), label = "barH")
+    val frac = if (dur > 0) livePos.toFloat() / dur else 0f
+    val shownPos = preview?.let { (it * dur).toLong() } ?: livePos
 
     Column {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(26.dp)
-                .pointerInput(dur) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { o -> dragFrac = (o.x / size.width).coerceIn(0f, 1f) },
-                        onHorizontalDrag = { change, dx ->
-                            change.consume()
-                            dragFrac = ((dragFrac ?: 0f) + dx / size.width).coerceIn(0f, 1f)
-                        },
-                        onDragEnd = {
-                            dragFrac?.let { if (dur > 0) MediaRepository.seekTo((it * dur).toLong()) }
-                            dragFrac = null
-                        },
-                        onDragCancel = { dragFrac = null },
-                    )
+        GlassBar(
+            fraction = preview ?: frac,
+            onSeek = { f, done ->
+                if (done) {
+                    if (dur > 0) MediaRepository.seekTo((f * dur).toLong())
+                    preview = null
+                } else {
+                    preview = f
                 }
-                .pointerInput(dur) {
-                    detectTapGestures { o ->
-                        if (dur > 0) MediaRepository.seekTo((o.x / size.width * dur).toLong())
-                    }
-                },
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(barH)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.25f))
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth(frac.coerceIn(0f, 1f))
-                        .fillMaxHeight()
-                        .background(Color.White.copy(alpha = 0.92f))
-                )
-            }
-        }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        )
         Row(Modifier.fillMaxWidth()) {
             Text(formatTime(shownPos), color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
             Spacer(Modifier.weight(1f))
@@ -531,6 +595,54 @@ private fun ProgressBar(np: NowPlaying) {
                 Text("-" + formatTime(dur - shownPos), color = Color.White.copy(alpha = 0.6f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
+    }
+}
+
+/** Volumen del teléfono (música), con íconos a cada lado como en iOS. */
+@Composable
+private fun VolumeSlider() {
+    val ctx = LocalContext.current
+    val am = remember { ctx.getSystemService(AudioManager::class.java) } ?: return
+    val max = remember { am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1) }
+    var vol by remember { mutableIntStateOf(am.getStreamVolume(AudioManager.STREAM_MUSIC)) }
+    var dragging by remember { mutableStateOf(false) }
+
+    // Si cambian el volumen con los botones físicos, la barra se actualiza
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (!dragging) vol = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            delay(350)
+        }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            Icons.AutoMirrored.Rounded.VolumeDown, "Bajar volumen",
+            tint = Color.White.copy(alpha = 0.7f),
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        GlassBar(
+            fraction = vol.toFloat() / max,
+            onSeek = { f, done ->
+                dragging = !done
+                val v = (f * max).roundToInt().coerceIn(0, max)
+                if (v != vol) {
+                    vol = v
+                    try {
+                        am.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
+                    } catch (_: Exception) {
+                    }
+                }
+            },
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(10.dp))
+        Icon(
+            Icons.AutoMirrored.Rounded.VolumeUp, "Subir volumen",
+            tint = Color.White.copy(alpha = 0.7f),
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 
@@ -542,9 +654,9 @@ private fun Controls(playing: Boolean) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         BounceButton(onClick = MediaRepository::previous) {
-            Icon(Icons.Rounded.FastRewind, "Anterior", tint = Color.White, modifier = Modifier.size(42.dp))
+            Icon(Icons.Rounded.FastRewind, "Anterior", tint = Color.White, modifier = Modifier.size(40.dp))
         }
-        BounceButton(onClick = MediaRepository::playPause, size = 76.dp) {
+        BounceButton(onClick = MediaRepository::playPause, size = 72.dp) {
             AnimatedContent(
                 targetState = playing,
                 transitionSpec = {
@@ -557,12 +669,12 @@ private fun Controls(playing: Boolean) {
                     if (p) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     if (p) "Pausa" else "Reproducir",
                     tint = Color.White,
-                    modifier = Modifier.size(58.dp),
+                    modifier = Modifier.size(54.dp),
                 )
             }
         }
         BounceButton(onClick = MediaRepository::next) {
-            Icon(Icons.Rounded.FastForward, "Siguiente", tint = Color.White, modifier = Modifier.size(42.dp))
+            Icon(Icons.Rounded.FastForward, "Siguiente", tint = Color.White, modifier = Modifier.size(40.dp))
         }
     }
 }
@@ -571,7 +683,7 @@ private fun Controls(playing: Boolean) {
 @Composable
 private fun BounceButton(
     onClick: () -> Unit,
-    size: Dp = 64.dp,
+    size: Dp = 60.dp,
     content: @Composable () -> Unit,
 ) {
     val src = remember { MutableInteractionSource() }
@@ -591,7 +703,7 @@ private fun BounceButton(
                 scaleY = scale
             }
             .clip(CircleShape)
-            .background(Color.White.copy(alpha = bg))
+            .background(Color.White.copy(alpha = bg.coerceIn(0f, 1f)))
             .clickable(interactionSource = src, indication = null) {
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onClick()
@@ -623,11 +735,11 @@ private fun UnlockHint(modifier: Modifier) {
             null,
             tint = Color.White.copy(alpha = a),
             modifier = Modifier
-                .size(28.dp)
+                .size(26.dp)
                 .graphicsLayer { translationY = dy.dp.toPx() },
         )
-        Text("Desliza hacia arriba para desbloquear", color = Color.White.copy(alpha = a), fontSize = 14.sp)
-        Spacer(Modifier.height(12.dp))
+        Text("Desliza hacia arriba para desbloquear", color = Color.White.copy(alpha = a), fontSize = 13.sp)
+        Spacer(Modifier.height(10.dp))
         Box(
             Modifier
                 .width(134.dp)
