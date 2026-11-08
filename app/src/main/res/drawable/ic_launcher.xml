@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ícono simple: candado sobre gradiente -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:angle="135"
+                android:endColor="#FF2D55"
+                android:startColor="#5856D6" />
+            <size android:width="108dp" android:height="108dp" />
+        </shape>
+    </item>
+    <item
+        android:bottom="30dp"
+        android:left="34dp"
+        android:right="34dp"
+        android:top="50dp">
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="#FFFFFF" />
+        </shape>
+    </item>
+    <item
+        android:bottom="54dp"
+        android:left="42dp"
+        android:right="42dp"
+        android:top="26dp">
+        <shape android:shape="rectangle">
+            <corners android:topLeftRadius="20dp" android:topRightRadius="20dp" />
+            <stroke android:width="6dp" android:color="#FFFFFF" />
+        </shape>
+    </item>
+</layer-list>
