@@ -331,9 +331,13 @@ private fun ArtPlaceholder() {
 @Composable
 private fun BlurredArt(art: Bitmap, modifier: Modifier) {
     val small = remember(art) {
-        val ratio = art.height.toFloat() / art.width.coerceAtLeast(1)
-        Bitmap.createScaledBitmap(art, 32, (32 * ratio).toInt().coerceAtLeast(1), true).asImageBitmap()
-    }
+        try {
+            val ratio = art.height.toFloat() / art.width.coerceAtLeast(1)
+            Bitmap.createScaledBitmap(art, 32, (32 * ratio).toInt().coerceAtLeast(1), true).asImageBitmap()
+        } catch (_: Exception) {
+            null
+        }
+    } ?: return
     val inf = rememberInfiniteTransition(label = "rot")
     val rot by inf.animateFloat(
         0f, 360f,

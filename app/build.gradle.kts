@@ -16,6 +16,16 @@ android {
         versionName = "1.0"
     }
 
+    // Llave fija: así cada APK nuevo se instala encima del anterior
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("liquidlock.keystore")
+            storePassword = "liquidlock"
+            keyAlias = "liquidlock"
+            keyPassword = "liquidlock"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

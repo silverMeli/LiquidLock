@@ -91,6 +91,7 @@ fun LiquidBackground(
 
     Canvas(modifier) {
         drawRect(base)
+        if (size.width < 1f || size.height < 1f) return@Canvas
         val r = max(size.width, size.height) * 0.62f
         for (i in 0 until 5) {
             val (fx, fy) = freqs[i]

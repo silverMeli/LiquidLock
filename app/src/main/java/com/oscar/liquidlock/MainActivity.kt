@@ -58,6 +58,11 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (App.crashFile(this).exists()) {
+            startActivity(Intent(this, CrashActivity::class.java))
+            finish()
+            return
+        }
         enableEdgeToEdge()
         if (Prefs.isEnabled(this)) LockService.start(this)
         setContent {

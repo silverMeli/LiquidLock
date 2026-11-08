@@ -36,12 +36,18 @@ class LockService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        ServiceCompat.startForeground(
-            this,
-            NOTIF_ID,
-            buildNotification(),
-            if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
-        )
+        try {
+            ServiceCompat.startForeground(
+                this,
+                NOTIF_ID,
+                buildNotification(),
+                if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("LiquidLock", "startForeground", e)
+            stopSelf()
+            return
+        }
         ContextCompat.registerReceiver(
             this,
             screenReceiver,
@@ -148,7 +154,11 @@ class LockService : Service() {
         private const val NOTIF_ID = 7
 
         fun start(ctx: Context) {
-            ContextCompat.startForegroundService(ctx, Intent(ctx, LockService::class.java))
+            try {
+                ContextCompat.startForegroundService(ctx, Intent(ctx, LockService::class.java))
+            } catch (e: Exception) {
+                android.util.Log.e("LiquidLock", "start", e)
+            }
         }
 
         fun stop(ctx: Context) {

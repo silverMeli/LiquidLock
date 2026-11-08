@@ -9,6 +9,7 @@ import android.media.session.MediaSession
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -60,6 +61,14 @@ class MediaListenerService : NotificationListenerService() {
     }
 
     private fun onSessionsChanged(controllers: List<MediaController>) {
+        try {
+            onSessionsChangedUnsafe(controllers)
+        } catch (e: Exception) {
+            android.util.Log.e("LiquidLock", "sessions", e)
+        }
+    }
+
+    private fun onSessionsChangedUnsafe(controllers: List<MediaController>) {
         val newTokens = controllers.map { it.sessionToken }.toSet()
 
         // Quitar sesiones que ya no existen
@@ -87,6 +96,15 @@ class MediaListenerService : NotificationListenerService() {
 
     /** Elige la sesión que se mostrará: la que suena; si ninguna, la última elegida. */
     private fun refresh() {
+        try {
+            refreshUnsafe()
+        } catch (e: Exception) {
+            // Una app de música rara no debe tumbar toda la app
+            android.util.Log.e("LiquidLock", "refresh", e)
+        }
+    }
+
+    private fun refreshUnsafe() {
         val all = tracked.values.map { it.first }
         val current = all.firstOrNull { it.sessionToken == selected }
         val chosen = when {
@@ -139,7 +157,11 @@ class MediaListenerService : NotificationListenerService() {
                 md.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI)
                     ?: md.getString(MediaMetadata.METADATA_KEY_ART_URI)
             )
-        return bmp?.let { downscale(it, 1080) }
+        return try {
+            bmp?.let { downscale(toSoftware(it), 1080) }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun loadFromUri(uri: String?): Bitmap? {
@@ -153,6 +175,12 @@ class MediaListenerService : NotificationListenerService() {
             null
         }
     }
+
+    /** Las imágenes "HARDWARE" no se pueden leer ni redimensionar: se copian. */
+    private fun toSoftware(b: Bitmap): Bitmap =
+        if (Build.VERSION.SDK_INT >= 26 && b.config == Bitmap.Config.HARDWARE) {
+            b.copy(Bitmap.Config.ARGB_8888, false)
+        } else b
 
     private fun downscale(src: Bitmap, max: Int): Bitmap {
         val big = maxOf(src.width, src.height)
